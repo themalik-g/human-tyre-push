@@ -16,11 +16,11 @@ using UnityEngine;
 public class TyrePhysics : MonoBehaviour
 {
     [Header("Real-world size and mass")]
-    [Tooltip("Outer radius in metres. 0.52 is a large, highly visible tyre (~1.04m diameter).")]
-    public float radius = 0.52f;
+    [Tooltip("Outer radius in metres. 0.7 is a big, highly visible tyre (1.4m diameter).")]
+    public float radius = 0.7f;
 
     [Tooltip("Mass in kg.")]
-    public float mass = 14f;
+    public float mass = 16f;
 
     [Tooltip("Tyre width in metres. Only used when no model is assigned (a model sets its own width).")]
     public float defaultWidth = 0.32f;
@@ -37,9 +37,11 @@ public class TyrePhysics : MonoBehaviour
     public Transform visual;
     public Material visualMaterial;
     public bool fitVisualToRadius = true;
+    [Tooltip("Stretch the model slightly so it is perfectly round (fixes slightly oval models).")]
+    public bool makeVisualRound = true;
 
     [Header("Contact")]
-    [Range(24, 64)] public int ringSegments = 40;
+    [Range(24, 64)] public int ringSegments = 48;
     public float friction = 0.9f;
     [Range(0f, 0.6f)] public float bounciness = 0.15f;
 
@@ -67,6 +69,13 @@ public class TyrePhysics : MonoBehaviour
     public float turnResponse = 8f;
     [Tooltip("Largest turning torque (N m).")]
     public float maxTurnTorque = 35f;
+
+    [Header("Stability (keeps a moving tyre upright so it is playable)")]
+    [Range(0f, 3f)]
+    [Tooltip("Self-righting of a moving tyre. 1 cancels gravity's pull on the lean, 1.5+ is firmly stable. Fades out at low speed so the wobble still shows. 0 = off.")]
+    public float stability = 1.6f;
+    [Tooltip("Largest righting torque (N m).")]
+    public float maxStabilityTorque = 160f;
 
     [Header("Wobble (looks about to fall as it slows)")]
     public bool wobble = true;
@@ -136,6 +145,7 @@ public class TyrePhysics : MonoBehaviour
     Collider tintSource;
     float lastLeanSign = 1f;
     float wobblePhase;
+    float pendingYaw;
 
     // ------------------------------------------------------------------
     void Awake()
@@ -234,7 +244,20 @@ public class TyrePhysics : MonoBehaviour
         float outer = Mathf.Max(b.size.y, b.size.z) * 0.5f;
         if (outer > 1e-4f)
         {
-            if (fitVisualToRadius)
+            if (fitVisualToRadius && makeVisualRound && b.size.y > 1e-4f && b.size.z > 1e-4f
+                && Quaternion.Angle(visual.localRotation, Quaternion.identity) < 1f)
+            {
+                // Modelled tyres are often a few percent oval. Stretch the short side so the tyre is
+                // perfectly round and sits exactly on the ground like the physics ring does.
+                float ky = radius / (b.size.y * 0.5f);
+                float kz = radius / (b.size.z * 0.5f);
+                float kx = 0.5f * (ky + kz);
+                Vector3 kk = new Vector3(kx, ky, kz);
+                visual.localScale = Vector3.Scale(visual.localScale, kk);
+                visual.localPosition = Vector3.Scale(visual.localPosition, kk);
+                TyreUtil.GetLocalBounds(transform, out b);
+            }
+            else if (fitVisualToRadius)
             {
                 float k = radius / outer;
                 visual.localScale = visual.localScale * k;
@@ -329,6 +352,9 @@ public class TyrePhysics : MonoBehaviour
     // ------------------------------------------------------------------
     void FixedUpdate()
     {
+        if (!SafetyCheck()) return;
+        ApplyPendingYaw();
+
         IsGrounded = groundSeen;
         GroundNormal = (groundSeen && groundNormalAccum.sqrMagnitude > 1e-6f) ? groundNormalAccum.normalized : Vector3.up;
 
@@ -411,6 +437,23 @@ public class TyrePhysics : MonoBehaviour
         float leanRight = -axle.y * Vector3.Dot(sH, right);
         float dt = Time.fixedDeltaTime;
 
+        // --- Stability ----------------------------------------------------
+        // A moving wheel stays up (gyro + trail). This restores that: a spring on the lean plus damping,
+        // fading in with speed so the slow-speed wobble below still looks like it is about to fall.
+        if (stability > 0f)
+        {
+            float f = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(wobbleBelowSpeed * 0.6f, wobbleBelowSpeed * 1.6f, speed));
+            if (f > 0f)
+            {
+                float kp = Body.mass * Physics.gravity.magnitude * radius * stability;
+                float iy = Mathf.Max(0.01f, Body.inertiaTensor.y);
+                float kd = 1.6f * iy * Mathf.Sqrt(kp / iy);
+                float wh = Vector3.Dot(Body.angularVelocity, heading);
+                float st = Mathf.Clamp((kp * leanRight - kd * wh) * f, -maxStabilityTorque, maxStabilityTorque);
+                Body.AddTorque(heading * st, ForceMode.Force);
+            }
+        }
+
         // --- Turning ------------------------------------------------------
         // A rolling wheel that leans curves towards its lean: yaw rate = g tan(lean) / speed.
         // Positive yaw (about +Y) is a right turn. We only add the turn that is missing, so hits that
@@ -447,6 +490,87 @@ public class TyrePhysics : MonoBehaviour
             float torque = (wobbleStrength * osc - wobbleGrowth * gravityTorque * leanRight) * k * calm;
             Body.AddTorque(heading * torque, ForceMode.Force);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Easy steering: turn the tyre's heading toward where it is being pushed.
+    // The whole state (pose, velocity, spin) is turned together about the vertical, so rolling stays
+    // consistent: the tyre simply travels along the new heading. Used by the stick and by body pushes.
+    // ------------------------------------------------------------------
+    public void AlignHeading(Vector3 desiredDir, float gain, float maxRate, float dt, float weight)
+    {
+        if (Body == null || !IsStanding) return;
+
+        desiredDir.y = 0f;
+        if (desiredDir.sqrMagnitude < 1e-4f) return;
+        desiredDir.Normalize();
+
+        Vector3 axle = Body.rotation * Vector3.right;
+        Vector3 heading = Vector3.Cross(axle, Vector3.up);
+        heading.y = 0f;
+        if (heading.sqrMagnitude < 1e-4f) return;
+        heading.Normalize();
+
+        // Which way is the tyre actually going? Follow its motion; at rest pick the closer end.
+        Vector3 vH = Body.linearVelocity;
+        vH.y = 0f;
+        float along = Vector3.Dot(heading, vH);
+        bool forward = Mathf.Abs(along) > 0.5f ? along > 0f : Vector3.Dot(heading, desiredDir) >= 0f;
+        if (!forward) heading = -heading;
+
+        float angle = Vector3.SignedAngle(heading, desiredDir, Vector3.up); // + = turn right
+        if (Mathf.Abs(angle) > 110f || Mathf.Abs(angle) < 1f) return;
+
+        float rate = Mathf.Clamp(angle * Mathf.Deg2Rad * gain, -maxRate, maxRate);
+        pendingYaw += rate * dt * Mathf.Clamp01(weight);
+    }
+
+    // Physics safety net: a NaN or an absurd velocity (from a bad contact or a solver spike) would
+    // otherwise send the tyre flying or freeze the whole scene.
+    Vector3 lastGoodPos;
+    Quaternion lastGoodRot = Quaternion.identity;
+    bool haveGood;
+
+    bool SafetyCheck()
+    {
+        Vector3 v = Body.linearVelocity;
+        Vector3 w = Body.angularVelocity;
+        bool bad = float.IsNaN(v.x + v.y + v.z + w.x + w.y + w.z) || float.IsNaN(Body.position.x + Body.position.y + Body.position.z)
+                   || v.sqrMagnitude > maxSpeed * maxSpeed * 4f;
+
+        if (bad)
+        {
+            if (haveGood)
+            {
+                Body.position = lastGoodPos;
+                Body.rotation = lastGoodRot;
+            }
+            Body.linearVelocity = Vector3.zero;
+            Body.angularVelocity = Vector3.zero;
+            return false;
+        }
+
+        // Remember a good, upright, grounded pose now and then.
+        if (groundSeen && IsStanding)
+        {
+            lastGoodPos = Body.position;
+            lastGoodRot = Body.rotation;
+            haveGood = true;
+        }
+        return true;
+    }
+
+    void ApplyPendingYaw()
+    {
+        if (Mathf.Abs(pendingYaw) < 1e-5f) { pendingYaw = 0f; return; }
+
+        float y = Mathf.Clamp(pendingYaw, -0.1f, 0.1f);
+        pendingYaw = 0f;
+
+        Quaternion q = Quaternion.AngleAxis(y * Mathf.Rad2Deg, Vector3.up);
+        Body.rotation = q * Body.rotation;
+        Body.linearVelocity = q * Body.linearVelocity;
+        Body.angularVelocity = q * Body.angularVelocity;
     }
 
     void OnCollisionEnter(Collision c)
@@ -571,6 +695,7 @@ public class TyrePhysics : MonoBehaviour
     /// <summary>Stand the tyre upright at a position, heading along rot's forward.</summary>
     public void Teleport(Vector3 position, Quaternion rotation)
     {
+        pendingYaw = 0f;
         Body.linearVelocity = Vector3.zero;
         Body.angularVelocity = Vector3.zero;
         Body.position = position;

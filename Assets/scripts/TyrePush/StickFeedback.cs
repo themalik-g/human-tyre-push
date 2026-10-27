@@ -108,7 +108,7 @@ public class StickFeedback : MonoBehaviour
         if (rumble) pulse = Mathf.Max(pulse, s);
 
         if (cameraShake && stick.cam != null)
-            stick.cam.AddShake(0.15f + s * 0.8f);
+            stick.cam.AddShake(0.05f + s * 0.35f);
     }
 
     void Update()

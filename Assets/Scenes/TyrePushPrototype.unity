@@ -169,9 +169,12 @@ MonoBehaviour:
   stickMaterial: {fileID: 2100000, guid: 426a835f07052a04fb42569c8c64f4cb, type: 2}
   tyreModel: {fileID: 919132149155446097, guid: e2b785d26f1ac124985aaae607b31252, type: 3}
   tyreMaterial: {fileID: 2100000, guid: ab0b4cad898bc97600b730c1b123fa96, type: 2}
-  useProjectTyreModel: 0
+  useProjectTyreModel: 1
+  soldierModel: {fileID: 919132149155446097, guid: 2222703f9efe56245b5a6e4acc93e2f2, type: 3}
+  soldierAnimator: {fileID: 9100000, guid: 3223b6e4fdf93404983b1409a314d063, type: 2}
+  showMenuAtStart: 1
   playerSpawn: {x: 0, y: 0.1, z: 0}
-  tyreDistance: 2.2
+  tyreDistance: 2.5
   fallY: -4
   buildTestArena: 1
   setFixedTimestep: 1
