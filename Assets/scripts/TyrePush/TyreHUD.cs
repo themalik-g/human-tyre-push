@@ -97,7 +97,7 @@ public class TyreHUD : MonoBehaviour
         if (showControlsHint)
         {
             TextMeshProUGUI hint = NewText("Controls", root,
-                "WASD Move | Shift Run | Space Jump | Mouse Look | LMB / E Push | RMB / Q Brace | R Reset",
+                "WASD Move | Shift Run | Space Jump | Mouse Look | LMB / E Push | A / D Steer while pushing | RMB / Q Brace | R Reset | M Menu",
                 24f, new Color(1f, 1f, 1f, 0.85f), TextAlignmentOptions.Bottom, FontStyles.Bold);
             SetRect(hint.rectTransform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 20f), new Vector2(1400f, 38f));
         }

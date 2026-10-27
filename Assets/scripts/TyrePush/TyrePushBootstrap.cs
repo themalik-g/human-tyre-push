@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -21,8 +22,13 @@ public class TyrePushBootstrap : MonoBehaviour
     [Tooltip("Only used when 'Use Project Tyre Model' is ticked.")]
     public GameObject tyreModel;
     public Material tyreMaterial;
-    [Tooltip("Off = generated tyre: perfectly round, hollow centre, real tread, no rim. On = the tyre mesh from the project.")]
-    public bool useProjectTyreModel = false;
+    [Tooltip("Off = generated tyre: perfectly round, hollow centre, real tread, no rim. On = the realistic tyre mesh from the project (default).")]
+    public bool useProjectTyreModel = true;
+
+    [Header("Extra character (optional)")]
+    [Tooltip("A second playable character, shown in the menu as 'Soldier'. Leave empty to hide it.")]
+    public GameObject soldierModel;
+    public RuntimeAnimatorController soldierAnimator;
 
     [Header("Spawn")]
     public Vector3 playerSpawn = new Vector3(0f, 0.1f, 0f);
@@ -41,9 +47,9 @@ public class TyrePushBootstrap : MonoBehaviour
     [Tooltip("Dust, tread marks, rolling/impact sound, stick hit puff, controller rumble and camera kick.")]
     public bool contactFeedback = true;
 
-    [Header("Levels")]
-    public int currentLevel = 1;
-    public int maxLevel = 3;
+    [Header("Menu")]
+    [Tooltip("Show the character / path / difficulty menu at launch. M or Tab opens it any time.")]
+    public bool showMenuAtStart = true;
 
     [Header("HUD")]
     public bool showObjective = true;
@@ -54,6 +60,34 @@ public class TyrePushBootstrap : MonoBehaviour
     public bool RunEnded { get; private set; }
     public bool LevelCompleted { get; private set; }
 
+    /// <summary>True while the menu is open (the game is paused).</summary>
+    public bool MenuOpen { get; set; }
+
+    [System.Serializable]
+    public class CharacterOption
+    {
+        public string name;
+        public GameObject model;
+        public RuntimeAnimatorController controller;
+        public Color tint = Color.white;
+        public bool fitHeight;
+    }
+
+    [System.NonSerialized] public List<CharacterOption> Characters = new List<CharacterOption>();
+
+    public string[] CharacterNames
+    {
+        get
+        {
+            string[] n = new string[Characters.Count];
+            for (int i = 0; i < n.Length; i++) n[i] = Characters[i].name;
+            return n;
+        }
+    }
+
+    float fallLean = 0.65f;
+    bool ownsPlayer;
+
     TyreHUD hud;
     Vector3 currentSummitPos;
     GameObject arenaContainer;
@@ -61,7 +95,9 @@ public class TyrePushBootstrap : MonoBehaviour
     // ------------------------------------------------------------------
     void Awake()
     {
-        if (setFixedTimestep) Time.fixedDeltaTime = 0.01f;
+        ConfigurePhysics();
+        TyreGameSettings.Load();
+        BuildCharacterList();
 
         DisableLegacyScripts();
         if (buildTestArena) BuildArena();
@@ -70,17 +106,38 @@ public class TyrePushBootstrap : MonoBehaviour
         BuildTyre();
         BuildCamera();
         BuildHud();
+        ApplyDifficulty();
+
+        if (showMenuAtStart)
+        {
+            GameObject mg = new GameObject("TyreMenu");
+            TyreMenu menu = mg.AddComponent<TyreMenu>();
+            menu.game = this;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Physics setup. A rolling tyre is the hardest thing for a physics engine: thin ring, fast spin,
+    // contact with seams. These settings keep it stable (see the notes in the project README).
+    // ------------------------------------------------------------------
+    void ConfigurePhysics()
+    {
+        if (setFixedTimestep) Time.fixedDeltaTime = 0.01f;   // 100 Hz
+        Time.maximumDeltaTime = 0.05f;                       // a long frame never causes a physics spiral
+        Physics.defaultSolverIterations = Mathf.Max(Physics.defaultSolverIterations, 12);
+        Physics.defaultSolverVelocityIterations = Mathf.Max(Physics.defaultSolverVelocityIterations, 4);
+        Physics.bounceThreshold = 1.5f;                      // no micro-bounces while rolling
     }
 
     void Update()
     {
-        if (Player == null || Tyre == null) return;
+        if (Player == null || Tyre == null || MenuOpen) return;
 
         if (!RunEnded && !LevelCompleted)
         {
             if (Tyre.transform.position.y < fallY) EndRun("The tyre fell off the track");
             else if (Player.transform.position.y < fallY) EndRun("You fell off the track");
-            else if (Mathf.Abs(Tyre.transform.right.y) > 0.65f && Tyre.IsGrounded) EndRun("The tyre fell down!");
+            else if (Mathf.Abs(Tyre.transform.right.y) > fallLean && Tyre.IsGrounded) EndRun("The tyre fell down!");
 
             // Check summit reach
             if (Vector3.Distance(Tyre.transform.position, currentSummitPos) < 4.0f)
@@ -109,7 +166,7 @@ public class TyrePushBootstrap : MonoBehaviour
     void CompleteLevel()
     {
         LevelCompleted = true;
-        if (hud != null) hud.SetLevelComplete(true, currentLevel < maxLevel ? $"LEVEL {currentLevel} COMPLETE!" : "ALL LEVELS COMPLETED!");
+        if (hud != null) hud.SetLevelComplete(true, TyreGameSettings.PathNames[TyreGameSettings.Path].ToUpper() + " COMPLETE!");
     }
 
     void NextLevel()
@@ -117,13 +174,142 @@ public class TyrePushBootstrap : MonoBehaviour
         LevelCompleted = false;
         if (hud != null) hud.SetLevelComplete(false);
 
-        if (currentLevel < maxLevel)
-            currentLevel++;
-        else
-            currentLevel = 1;
+        TyreGameSettings.Path = (TyreGameSettings.Path + 1) % TyreGameSettings.PathCount;
+        TyreGameSettings.Save();
 
         if (buildTestArena) BuildArena();
         RestartRun();
+    }
+
+    // ------------------------------------------------------------------
+    // Menu choices
+    // ------------------------------------------------------------------
+    public void ApplySelection(bool restart)
+    {
+        TyreGameSettings.Save();
+        if (ownsPlayer) ApplyCharacter(TyreGameSettings.Character);
+        ApplyDifficulty();
+        if (buildTestArena) BuildArena();
+        if (restart) RestartRun();
+    }
+
+    void ApplyDifficulty()
+    {
+        DifficultyProfile d = TyreGameSettings.Profile(TyreGameSettings.Difficulty);
+        fallLean = d.fallLean;
+
+        if (Tyre != null)
+        {
+            Tyre.stability = d.stability;
+            Tyre.wobbleStrength = d.wobble;
+            Tyre.rollingResistance = d.rolling;
+        }
+
+        if (Player != null)
+        {
+            StickTool st = Player.GetComponent<StickTool>();
+            if (st != null)
+            {
+                st.headingGain = d.headingGain;
+                st.steerMaxAngle = d.steerMaxAngle;
+            }
+        }
+    }
+
+    void BuildCharacterList()
+    {
+        Characters.Clear();
+        Characters.Add(new CharacterOption { name = "X Bot", model = playerModel, controller = playerAnimator, tint = new Color(0.85f, 0.85f, 0.88f) });
+        if (soldierModel != null)
+            Characters.Add(new CharacterOption { name = "Soldier", model = soldierModel, controller = soldierAnimator, fitHeight = true });
+        Characters.Add(new CharacterOption { name = "Red Runner", tint = new Color(0.85f, 0.20f, 0.18f) });
+        Characters.Add(new CharacterOption { name = "Blue Runner", tint = new Color(0.20f, 0.45f, 0.90f) });
+        Characters.Add(new CharacterOption { name = "Gold Runner", tint = new Color(0.95f, 0.75f, 0.15f) });
+
+        TyreGameSettings.Character = Mathf.Clamp(TyreGameSettings.Character, 0, Characters.Count - 1);
+    }
+
+    // Swaps the visible character (and its animator) without touching the physics body.
+    void ApplyCharacter(int index)
+    {
+        if (Player == null) return;
+        index = Mathf.Clamp(index, 0, Characters.Count - 1);
+        CharacterOption c = Characters[index];
+        Transform root = Player.transform;
+
+        foreach (string old in new[] { "Model", "PlaceholderBody" })
+        {
+            Transform t = root.Find(old);
+            if (t != null)
+            {
+                t.name = old + " (old)";
+                t.gameObject.SetActive(false);
+                Destroy(t.gameObject);
+            }
+        }
+
+        Animator anim = null;
+
+        if (c.model != null)
+        {
+            GameObject m = Instantiate(c.model, root);
+            m.name = "Model";
+            m.transform.localPosition = Vector3.zero;
+            m.transform.localRotation = Quaternion.identity;
+            TyreUtil.StripColliders(m);
+
+            anim = m.GetComponentInChildren<Animator>(true);
+            if (anim == null) anim = m.AddComponent<Animator>();
+            if (c.controller != null) anim.runtimeAnimatorController = c.controller;
+            anim.applyRootMotion = false;
+
+            if (c.fitHeight) FitHeight(m.transform, root.position.y, 1.8f);
+
+            StickTool stick = Player.GetComponent<StickTool>();
+            if (stick != null && anim.isHuman && anim.gameObject.GetComponent<StickHandIK>() == null)
+            {
+                StickHandIK ik = anim.gameObject.AddComponent<StickHandIK>();
+                ik.tool = stick;
+            }
+        }
+        else
+        {
+            GameObject body = new GameObject("Model");
+            body.transform.SetParent(root, false);
+
+            Material mat = TyreUtil.MakeMaterial(c.tint, 0.3f);
+
+            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            cap.transform.SetParent(body.transform, false);
+            cap.transform.localPosition = new Vector3(0f, 0.9f, 0f);
+            cap.transform.localScale = new Vector3(0.6f, 0.9f, 0.6f);
+            cap.GetComponent<Renderer>().sharedMaterial = mat;
+
+            // a dark visor shows which way the character faces
+            GameObject visor = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            visor.transform.SetParent(body.transform, false);
+            visor.transform.localPosition = new Vector3(0f, 1.45f, 0.24f);
+            visor.transform.localScale = new Vector3(0.4f, 0.14f, 0.14f);
+            visor.GetComponent<Renderer>().sharedMaterial = TyreUtil.MakeMaterial(new Color(0.08f, 0.08f, 0.1f), 0.6f);
+
+            TyreUtil.StripColliders(body);
+        }
+
+        Player.SetAnimator(anim);
+    }
+
+    // Scales a model to a sensible height and stands it on the ground.
+    static void FitHeight(Transform model, float groundY, float targetHeight)
+    {
+        Bounds b;
+        if (!TyreUtil.GetLocalBounds(model, out b)) return;
+
+        float h = b.size.y * model.lossyScale.y;
+        if (h > 0.1f && (h < 1.5f || h > 2.1f))
+            model.localScale *= targetHeight / h;
+
+        float minY = model.TransformPoint(new Vector3(0f, b.min.y, 0f)).y;
+        model.position += Vector3.up * (groundY - minY);
     }
 
     void RestartRun()
@@ -183,16 +369,38 @@ public class TyrePushBootstrap : MonoBehaviour
         Material dark = TyreUtil.MakeMaterial(new Color(0.12f, 0.12f, 0.13f), 0.1f);
         Material orange = TyreUtil.MakeMaterial(new Color(0.95f, 0.35f, 0.10f), 0.2f);
 
-        float width = currentLevel == 1 ? 4.5f : (currentLevel == 2 ? 3.5f : 2.5f);
+        int p = TyreGameSettings.Path;
+        DifficultyProfile dp = TyreGameSettings.Profile(TyreGameSettings.Difficulty);
+        bool some = dp.barriers > 0;
+        bool extra = dp.barriers > 1;
+
+        float baseWidth = p == 0 ? 12f : (p == 1 ? 4.5f : (p == 2 ? 3.5f : 2.5f));
+        float width = baseWidth * dp.trackWidth;
 
         // start platform
         Box("StartPlatform", new Vector3(0f, -0.5f, 0f), Quaternion.identity, new Vector3(8f, 1f, 10f), sand);
 
-        if (currentLevel == 1)
+        if (p == 0)
         {
-            // Level 1: Wide straight track with few barriers
+            // Training Yard: wide flat ground, flag at the far end
+            Box("Yard", new Vector3(0f, -0.5f, 28f), Quaternion.identity, new Vector3(width, 1f, 50f), sand);
+            if (some)
+            {
+                Barrier("Barrier A", new Vector3(-width * 0.18f, 0.35f, 18f), hazard, dark);
+                Barrier("Barrier B", new Vector3(width * 0.18f, 0.35f, 30f), hazard, dark);
+            }
+            if (extra) Barrier("Barrier C", new Vector3(0f, 0.35f, 40f), hazard, dark);
+
+            currentSummitPos = new Vector3(0f, 0f, 47f);
+            Box("Summit", currentSummitPos + new Vector3(0f, -0.5f, 0f), Quaternion.identity, new Vector3(8f, 1f, 8f), sand);
+            BuildFlag(currentSummitPos, hazard, orange);
+        }
+        else if (p == 1)
+        {
+            // Hill Climb: wide straight track, then a gentle ramp
             Box("Track", new Vector3(0f, -0.5f, 25f), Quaternion.identity, new Vector3(width, 1f, 40f), sand);
-            Barrier("Barrier A", new Vector3(-0.8f, 0.35f, 20f), hazard, dark);
+            if (some) Barrier("Barrier A", new Vector3(-0.8f, 0.35f, 20f), hazard, dark);
+            if (extra) Barrier("Barrier B", new Vector3(0.8f, 0.35f, 32f), hazard, dark);
 
             const float rampLen = 25f;
             Quaternion rot = Quaternion.Euler(-6f, 0f, 0f);
@@ -206,18 +414,19 @@ public class TyrePushBootstrap : MonoBehaviour
 
             BuildFlag(currentSummitPos, hazard, orange);
         }
-        else if (currentLevel == 2)
+        else if (p == 2)
         {
-            // Level 2: Narrower track with S-turns
+            // S-Curves: narrower track with a right and a left turn
             Box("Track 1", new Vector3(0f, -0.5f, 15f), Quaternion.identity, new Vector3(width, 1f, 20f), sand);
-            Barrier("Barrier A", new Vector3(-0.6f, 0.35f, 12f), hazard, dark);
+            if (some) Barrier("Barrier A", new Vector3(-0.6f, 0.35f, 12f), hazard, dark);
 
-            // Turn Right
+            // Turn right
             Box("Corner 1", new Vector3(3f, -0.5f, 28f), Quaternion.identity, new Vector3(10f, 1f, width), sand);
-            Barrier("Barrier B", new Vector3(5f, 0.35f, 28f), hazard, dark);
+            if (some) Barrier("Barrier B", new Vector3(5f, 0.35f, 28f), hazard, dark);
 
-            // Turn Left & Forward
+            // Turn left and forward
             Box("Track 2", new Vector3(7f, -0.5f, 45f), Quaternion.identity, new Vector3(width, 1f, 30f), sand);
+            if (extra) Barrier("Barrier C", new Vector3(6.6f, 0.35f, 40f), hazard, dark);
 
             const float rampLen = 30f;
             Quaternion rot = Quaternion.Euler(-10f, 0f, 0f);
@@ -232,10 +441,14 @@ public class TyrePushBootstrap : MonoBehaviour
         }
         else
         {
-            // Level 3: Very narrow, steep climbs & multiple obstacles
+            // Mountain Pass: very narrow, steep climbs and obstacles
             Box("Track 1", new Vector3(0f, -0.5f, 15f), Quaternion.identity, new Vector3(width, 1f, 20f), sand);
-            Barrier("Barrier A", new Vector3(-0.4f, 0.35f, 10f), hazard, dark);
-            Barrier("Barrier B", new Vector3(0.4f, 0.35f, 18f), hazard, dark);
+            if (some)
+            {
+                Barrier("Barrier A", new Vector3(-0.4f, 0.35f, 10f), hazard, dark);
+                Barrier("Barrier B", new Vector3(0.4f, 0.35f, 18f), hazard, dark);
+            }
+            if (extra) Barrier("Barrier C", new Vector3(0f, 0.35f, 14f), hazard, dark);
 
             const float ramp1Len = 25f;
             Quaternion rot1 = Quaternion.Euler(-12f, 0f, 0f);
@@ -330,36 +543,8 @@ public class TyrePushBootstrap : MonoBehaviour
 
         TyreGameInput inp = go.AddComponent<TyreGameInput>();
 
-        Animator anim = null;
-        if (playerModel != null)
-        {
-            GameObject m = Instantiate(playerModel, go.transform);
-            m.name = "Model";
-            m.transform.localPosition = Vector3.zero;
-            m.transform.localRotation = Quaternion.identity;
-            TyreUtil.StripColliders(m);
-
-            anim = m.GetComponentInChildren<Animator>(true);
-            if (anim == null) anim = m.AddComponent<Animator>();
-            if (playerAnimator != null) anim.runtimeAnimatorController = playerAnimator;
-            anim.applyRootMotion = false;
-        }
-        else
-        {
-            Debug.LogWarning("TyrePushBootstrap: no Player Model assigned. Using a plain placeholder body.");
-            GameObject body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            body.name = "PlaceholderBody";
-            Collider bc = body.GetComponent<Collider>();
-            if (bc != null) { bc.enabled = false; Destroy(bc); }
-            body.transform.SetParent(go.transform, false);
-            body.transform.localPosition = new Vector3(0f, 0.9f, 0f);
-            body.transform.localScale = new Vector3(0.6f, 0.9f, 0.6f);
-            body.GetComponent<Renderer>().sharedMaterial = TyreUtil.MakeMaterial(new Color(0.85f, 0.85f, 0.88f), 0.3f);
-        }
-
         PlayerMotor motor = go.AddComponent<PlayerMotor>();
         motor.input = inp;
-        motor.animator = anim;
 
         StickTool stick = go.AddComponent<StickTool>();
         stick.player = motor;
@@ -369,14 +554,10 @@ public class TyrePushBootstrap : MonoBehaviour
 
         if (contactFeedback) go.AddComponent<StickFeedback>();
 
-        if (anim != null)
-        {
-            StickHandIK ik = anim.gameObject.AddComponent<StickHandIK>();
-            ik.tool = stick;
-        }
-
         go.SetActive(true);
         Player = motor;
+        ownsPlayer = true;
+        ApplyCharacter(TyreGameSettings.Character);
     }
 
     void BuildTyre()

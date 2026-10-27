@@ -12,7 +12,7 @@ public class ThirdPersonCamera : MonoBehaviour
     public TyreGameInput input;
 
     [Header("Framing")]
-    public float distance = 4.2f;
+    public float distance = 5.0f;
     public float pivotHeight = 1.6f;
     public float shoulderOffset = 0.55f;
     public float startPitch = 14f;
@@ -28,6 +28,12 @@ public class ThirdPersonCamera : MonoBehaviour
     [Header("Collision")]
     public float collisionRadius = 0.25f;
     public bool lockCursor = true;
+
+    /// <summary>True while a menu is open: no look input, no cursor re-lock.</summary>
+    [HideInInspector] public bool inputBlocked;
+
+    public void LockCursor() { SetCursor(lockCursor); }
+    public void UnlockCursor() { SetCursor(false); }
 
     /// <summary>Look speed multiplier. The stick tool lowers it near the tyre for finer aim.</summary>
     [HideInInspector] public float lookScale = 1f;
@@ -68,10 +74,10 @@ public class ThirdPersonCamera : MonoBehaviour
         if (target == null) return;
         if (!initialised) Init(target);
 
-        HandleCursor();
+        if (!inputBlocked) HandleCursor();
 
         Vector2 look = Vector2.zero;
-        if (input != null)
+        if (input != null && !inputBlocked)
         {
             if (Cursor.lockState == CursorLockMode.Locked)
                 look += input.MouseLook * (mouseSensitivity * lookScale);

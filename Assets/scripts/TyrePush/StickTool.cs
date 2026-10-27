@@ -31,7 +31,11 @@ public class StickTool : MonoBehaviour
 
     [Header("Stick")]
     [Tooltip("Stick length in metres.")]
-    public float length = 1.5f;
+    public float length = 1.8f;
+    [Tooltip("Stick thickness (diameter, m) for the generated stick. A broom handle is about 0.03, this is a chunky club.")]
+    public float thickness = 0.08f;
+    [Tooltip("How much thicker than the original the stick MODEL is drawn (1 = as modelled).")]
+    public float modelThickness = 2.2f;
     public GameObject stickModel;
     public Material stickMaterial;
     [Tooltip("Tick if the stick model is held by the wrong end.")]
@@ -42,42 +46,57 @@ public class StickTool : MonoBehaviour
     [Header("Aiming (fine control)")]
     [Range(0f, 1.5f)]
     [Tooltip("How far the contact point moves across the tyre per metre you move or aim sideways. 0.8 means 10 cm of side movement moves the hit by 8 cm.")]
-    public float lateralAimGain = 0.8f;
+    public float lateralAimGain = 1.0f;
     [Tooltip("Furthest the stick can land from the tyre centre line (m). Tread half-width is about 0.12, so 0.3 reaches past the shoulder.")]
     public float maxLateralAim = 0.3f;
     [Tooltip("Within this distance (m) of the tyre the character holds still facing the camera, sideways steps get small and mouse turning slows down.")]
-    public float nearTyreEnter = 3.2f;
-    public float nearTyreExit = 3.8f;
+    public float nearTyreEnter = 3.6f;
+    public float nearTyreExit = 4.2f;
     [Range(0.1f, 1f)]
     [Tooltip("Mouse/stick look speed multiplier while near the tyre. Lower = finer aim.")]
     public float nearTyreLookScale = 0.4f;
 
+    [Header("Steering (hold Push, then A / D or left stick)")]
+    [Tooltip("Largest angle (deg) the push can be steered to the left or right of where the camera looks. D = tyre goes right, A = tyre goes left.")]
+    public float steerMaxAngle = 40f;
+    [Tooltip("How quickly the steering builds up and returns to centre (1/s).")]
+    public float steerResponse = 6f;
+    [Tooltip("While you push, the tyre's heading is turned toward the push direction. Gain of that turn (1/s). 0 = off (pure physics).")]
+    public float headingGain = 3f;
+    [Tooltip("Fastest heading change (rad/s) the stick can make.")]
+    public float headingMaxRate = 2.2f;
+    [Range(0f, 0.9f)]
+    [Tooltip("How far across the tread (fraction of half-width) the hit moves at full steer. Hitting the left side sends the tyre right.")]
+    public float steerContactShift = 0.5f;
+    [Tooltip("Draw an arrow on the ground showing where the push will send the tyre.")]
+    public bool showGuide = true;
+
     [Header("Forces (Newtons)")]
     [Tooltip("Highest steady push a person can hold with a stick.")]
-    public float holdForce = 150f;
+    public float holdForce = 130f;
     [Tooltip("Highest force during a poke stroke.")]
-    public float pokeForce = 320f;
+    public float pokeForce = 240f;
     [Tooltip("Pressing force while bracing.")]
     public float braceForce = 100f;
     [Tooltip("Servo gain in N per (m/s) of closing speed.")]
-    public float servoGain = 220f;
+    public float servoGain = 140f;
     [Tooltip("How much faster than the hand the stick tries to move the tyre at full push (m/s).")]
-    public float pushOverspeed = 0.6f;
+    public float pushOverspeed = 0.5f;
 
     [Header("Start from rest (the initial jerk)")]
     [Tooltip("Tyre speed (m/s) below which a new contact counts as a start from rest.")]
     public float restSpeed = 0.3f;
     [Tooltip("Extra force added at the very start, decaying away. This is the breakaway kick.")]
-    public float launchSurge = 120f;
+    public float launchSurge = 45f;
     [Tooltip("How fast the surge decays (s).")]
-    public float launchSurgeTime = 0.12f;
+    public float launchSurgeTime = 0.22f;
 
     [Header("Force build-up (N per second, jerk limit)")]
-    public float pushRiseRate = 1800f;
-    public float pokeRiseRate = 9000f;
+    public float pushRiseRate = 700f;
+    public float pokeRiseRate = 2600f;
     [Tooltip("Lower = a more progressive, controllable brake.")]
-    public float braceRiseRate = 600f;
-    public float releaseRate = 8000f;
+    public float braceRiseRate = 450f;
+    public float releaseRate = 2500f;
 
     [Header("Poke stroke")]
     public float pokeDuration = 0.28f;
@@ -86,12 +105,14 @@ public class StickTool : MonoBehaviour
     public float pokeCooldown = 0.08f;
 
     [Header("Contact")]
-    public float contactRadius = 0.02f;
+    public float contactRadius = 0.04f;
     [Tooltip("Stick on rubber friction coefficient (push / poke).")]
-    public float contactFriction = 0.55f;
+    public float contactFriction = 0.9f;
     [Tooltip("Stick on rubber friction coefficient while braking (a firm press grips better).")]
-    public float braceFriction = 0.6f;
-    public float frictionStiffness = 60f;
+    public float braceFriction = 0.9f;
+    public float frictionStiffness = 40f;
+    [Tooltip("Time (s) over which a new touch fades in, so contact never jerks. 0 = instant.")]
+    public float touchSoftening = 0.09f;
 
     [Header("Brace reflex (friction-limited)")]
     public bool braceAssist = true;
@@ -106,6 +127,12 @@ public class StickTool : MonoBehaviour
     public Mode CurrentMode { get; private set; }
     public Vector3 GripWorld { get; private set; }
     public Vector3 Direction { get { return dirCurrent; } }
+
+    /// <summary>Steering input, -1 (left) .. +1 (right), smoothed.</summary>
+    public float Steer { get { return steer; } }
+
+    /// <summary>Flat world direction the push is aimed along (camera direction turned by the steering).</summary>
+    public Vector3 PushDirection { get; private set; } = Vector3.forward;
     public bool InContact { get; private set; }
     public float ContactForce { get; private set; }
     public float ContactSlip { get; private set; }
@@ -133,7 +160,11 @@ public class StickTool : MonoBehaviour
     bool braceLeanPrevValid;
 
     bool wasNear;
+    float steer;
+    Vector3 physGrip;
+    LineRenderer guide;
     float appliedForce;      // slew-limited normal force
+    float contactTime;
     float surgeTime;
     bool startedFromRest;
 
@@ -146,6 +177,7 @@ public class StickTool : MonoBehaviour
         pokeTimer = pokeDuration;
         dirCurrent = transform.forward;
         BuildVisual();
+        BuildGuide();
     }
 
     void Start()
@@ -157,6 +189,7 @@ public class StickTool : MonoBehaviour
     void OnDestroy()
     {
         if (stickRoot != null) Destroy(stickRoot.gameObject);
+        if (guide != null) Destroy(guide.gameObject);
     }
 
     void OnDisable()
@@ -165,6 +198,7 @@ public class StickTool : MonoBehaviour
         {
             player.ClearFacing();
             player.SetPrecisionLateral(false);
+            player.SetLateralLock(false);
             player.SetAnimatorBool("hitTyre", false);
         }
         if (cam != null) cam.lookScale = 1f;
@@ -184,6 +218,7 @@ public class StickTool : MonoBehaviour
             TyreUtil.StripColliders(m);
             FitStick(m.transform);
             TyreUtil.ApplyMaterial(m, stickMaterial);
+            stickRoot.localScale = new Vector3(modelThickness, modelThickness, 1f); // thicker, same length
         }
         else
         {
@@ -194,7 +229,7 @@ public class StickTool : MonoBehaviour
 
             cyl.transform.SetParent(stickRoot, false);
             cyl.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-            cyl.transform.localScale = new Vector3(0.035f, length * 0.5f, 0.035f);
+            cyl.transform.localScale = new Vector3(thickness, length * 0.5f, thickness);
             cyl.transform.localPosition = new Vector3(0f, 0f, length * 0.5f);
 
             Material mat = stickMaterial != null ? stickMaterial : TyreUtil.MakeMaterial(new Color(0.45f, 0.28f, 0.13f), 0.15f);
@@ -294,11 +329,22 @@ public class StickTool : MonoBehaviour
 
         // --- aim ---------------------------------------------------------
         Transform pt = player.transform;
-        Vector3 grip = pt.TransformPoint(gripLocalOffset);
+        Vector3 hand = pt.TransformPoint(gripLocalOffset);
+        Vector3 camFlat = cam != null ? Quaternion.Euler(0f, cam.Yaw, 0f) * Vector3.forward : pt.forward;
+        Vector3 camRight = Vector3.Cross(Vector3.up, camFlat);
+
+        // The PHYSICS origin of the stick sits on the camera's centre line, not on the right hand.
+        // (The old version started 0.28 m to the right, so every "straight" push slanted to the left.)
+        // Where the crosshair line meets the tyre is where it is hit, and a tyre in the middle of the
+        // screen is hit in the middle and pushed straight. The visible stick bends from the hand to the
+        // same contact point.
+        float shoulder = cam != null ? cam.shoulderOffset : 0f;
+        Vector3 grip = new Vector3(pt.position.x, hand.y, pt.position.z) + camRight * shoulder + camFlat * gripLocalOffset.z;
+
         Vector3 dirTarget;
         InRange = false;
-
         bool near = false;
+        Vector3 steerDir = camFlat;
 
         if (tyre != null)
         {
@@ -308,20 +354,26 @@ public class StickTool : MonoBehaviour
                 ? 0.85f
                 : Mathf.Lerp(0.9f, 0.1f, Mathf.InverseLerp(0f, 35f, pitch));
 
-            Vector3 camFlat = cam != null ? Quaternion.Euler(0f, cam.Yaw, 0f) * Vector3.forward : pt.forward;
-            Vector3 camRight = Vector3.Cross(Vector3.up, camFlat);
-
-            Vector3 playerToTyre = c - pt.position;
-            playerToTyre.y = 0f;
-
-            Vector3 toFlat = c - grip;
+            Vector3 toFlat = c - hand;
             toFlat.y = 0f;
             near = toFlat.magnitude < (wasNear ? nearTyreExit : nearTyreEnter);
 
-            // Lateral aim: calculate miss relative to player/camera center line (pt.position)
-            // so straight-ahead aiming hits the exact center of the tyre with zero lateral offset.
-            float miss = -Vector3.Dot(playerToTyre, camRight);
-            float lateral = Mathf.Clamp(miss * lateralAimGain, -maxLateralAim, maxLateralAim);
+            // --- steering: A / D (or left stick) while pushing ---------------
+            bool steering = near && (CurrentMode == Mode.Push || CurrentMode == Mode.Poke);
+            float steerTarget = 0f;
+            if (steering)
+            {
+                steerTarget = input.Move.x;
+                if (Mathf.Abs(steerTarget) < 0.15f) steerTarget = 0f;
+            }
+            steer = Mathf.MoveTowards(steer, Mathf.Clamp(steerTarget, -1f, 1f), steerResponse * dt);
+            steerDir = Quaternion.AngleAxis(steer * steerMaxAngle, Vector3.up) * camFlat;
+
+            // --- where the stick lands across the tread ----------------------
+            float halfW = tyre.Width * 0.5f;
+            float latMax = Mathf.Min(maxLateralAim, halfW * 0.85f);
+            float hoff = Vector3.Dot(c - grip, camRight);   // tyre centre to the right of the crosshair line
+            float lateral = Mathf.Clamp(-hoff * lateralAimGain - steer * steerContactShift * halfW, -latMax, latMax);
 
             Vector3 aimPoint = c + Vector3.up * (tyre.radius * ratio) + camRight * lateral;
             Vector3 to = aimPoint - grip;
@@ -340,17 +392,22 @@ public class StickTool : MonoBehaviour
         }
         else
         {
+            steer = Mathf.MoveTowards(steer, 0f, steerResponse * dt);
             dirTarget = Quaternion.AngleAxis(50f, pt.right) * pt.forward;
             player.ClearFacing();
         }
 
+        PushDirection = steerDir;
         wasNear = near;
         player.SetPrecisionLateral(near);
+        // While pushing near the tyre, A / D steer instead of strafing.
+        player.SetLateralLock(near && (CurrentMode == Mode.Push || CurrentMode == Mode.Poke));
         if (cam != null) cam.lookScale = near ? nearTyreLookScale : 1f;
 
         float k = engaged ? 20f : 8f;
         dirCurrent = Vector3.Slerp(dirCurrent, dirTarget, 1f - Mathf.Exp(-k * dt)).normalized;
-        GripWorld = grip + dirCurrent * ext;
+        physGrip = grip + dirCurrent * ext;     // physics origin (camera line)
+        GripWorld = hand + dirCurrent * ext;    // the visible hand (IK, stick visual)
 
         player.SetAnimatorBool("hitTyre", engaged);
     }
@@ -380,7 +437,7 @@ public class StickTool : MonoBehaviour
             return;
         }
 
-        Vector3 g = GripWorld;
+        Vector3 g = physGrip;
         Vector3 dir = dirCurrent;
 
         Vector3 point, normal;
@@ -395,8 +452,10 @@ public class StickTool : MonoBehaviour
         {
             startedFromRest = tyre.Speed < restSpeed;
             surgeTime = 0f;
+            contactTime = 0f;
         }
         surgeTime += dt;
+        contactTime += dt;
 
         // Relative velocity of the stick against the tyre surface at the contact point
         Vector3 vStick = player.HorizontalVelocity + dir * extRate;
@@ -432,7 +491,11 @@ public class StickTool : MonoBehaviour
             mu = contactFriction;
         }
 
-        // Jerk limit: the arm cannot change force instantly.
+        // A new touch fades in smoothly (no instant step) ...
+        if (touchSoftening > 0f)
+            target *= Mathf.SmoothStep(0f, 1f, contactTime / touchSoftening);
+
+        // ... and the arm cannot change force instantly (jerk limit).
         float step = (target > appliedForce ? rise : releaseRate) * dt;
         appliedForce = Mathf.MoveTowards(appliedForce, target, step);
         float fn = appliedForce;
@@ -441,9 +504,23 @@ public class StickTool : MonoBehaviour
         // surface is limited by the friction cone, so a steep approach angle makes the stick slip.
         Vector3 into = -normal;
         Vector3 intent = Vector3.zero;
-        float cosPhi = Vector3.Dot(dir, into);
+
+        // The push goes where you steer (camera direction turned by A / D), keeping the stick's pitch.
+        Vector3 pushDir = dir;
+        if (CurrentMode != Mode.Brace)
+        {
+            Vector3 flat = PushDirection;
+            flat.y = 0f;
+            if (flat.sqrMagnitude > 1e-4f)
+            {
+                float hl = Mathf.Sqrt(Mathf.Max(0f, 1f - dir.y * dir.y));
+                pushDir = (flat.normalized * hl + Vector3.up * dir.y).normalized;
+            }
+        }
+
+        float cosPhi = Vector3.Dot(pushDir, into);
         if (cosPhi > 0.05f)
-            intent = (dir / cosPhi - into) * fn;
+            intent = (pushDir / cosPhi - into) * fn;
 
         Vector3 vTan = vRel - normal * Vector3.Dot(vRel, normal);
         Vector3 ft = Vector3.ClampMagnitude(intent + vTan * frictionStiffness, mu * fn);
@@ -480,6 +557,14 @@ public class StickTool : MonoBehaviour
 
         // One call gives the Rigidbody both a push and a torque (r x F), exactly like AddForce + AddTorque.
         tyre.Body.AddForceAtPosition(force, point, ForceMode.Force);
+
+        // Easy direction change: while you push, the tyre's heading follows the push direction.
+        // The contact still gives the real push and torque; this only keeps the turn predictable.
+        if (CurrentMode != Mode.Brace && headingGain > 0f)
+        {
+            float w = Mathf.Clamp01(fn / Mathf.Max(1f, holdForce * 0.35f));
+            tyre.AlignHeading(PushDirection, headingGain, headingMaxRate, dt, w);
+        }
 
         // Newton's third law: the player feels the push
         player.ApplyVelocityChange(-force * dt / Mathf.Max(1f, player.mass));
@@ -543,14 +628,64 @@ public class StickTool : MonoBehaviour
     // ------------------------------------------------------------------
     void LateUpdate()
     {
-        if (stickRoot == null) return;
+        if (stickRoot != null)
+        {
+            // Tip of the stick: the contact point while touching the tyre, otherwise the full length.
+            float tipDist = (InContact && contactDistance >= 0f && contactDistance < length) ? contactDistance + contactRadius * 0.8f : length;
+            Vector3 tip = physGrip + dirCurrent * tipDist;
 
-        float slide = 0f;
-        if (InContact && contactDistance >= 0f && contactDistance < length)
-            slide = contactDistance - length;
+            // The visible stick runs from the hand to that tip.
+            Vector3 vis = tip - GripWorld;
+            Vector3 dirVis = vis.sqrMagnitude > 0.01f ? vis.normalized : dirCurrent;
 
-        stickRoot.SetPositionAndRotation(
-            GripWorld + dirCurrent * slide,
-            Quaternion.LookRotation(dirCurrent, Vector3.up));
+            stickRoot.SetPositionAndRotation(
+                tip - dirVis * length,
+                Quaternion.LookRotation(dirVis, Vector3.up));
+        }
+
+        UpdateGuide();
+    }
+
+    // ------------------------------------------------------------------
+    // Ground arrow: where the push will send the tyre
+    // ------------------------------------------------------------------
+    void BuildGuide()
+    {
+        GameObject go = new GameObject("Push Guide");
+        guide = go.AddComponent<LineRenderer>();
+        guide.positionCount = 2;
+        guide.widthMultiplier = 0.09f;
+        guide.numCapVertices = 6;
+        guide.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        guide.receiveShadows = false;
+
+        Shader sh = Shader.Find("Sprites/Default");
+        guide.sharedMaterial = sh != null ? new Material(sh) : TyreUtil.MakeMaterial(Color.white, 0f);
+        guide.enabled = false;
+    }
+
+    void UpdateGuide()
+    {
+        if (guide == null) return;
+
+        bool show = showGuide && tyre != null && wasNear;
+        guide.enabled = show;
+        if (!show) return;
+
+        Vector3 d = PushDirection;
+        d.y = 0f;
+        d.Normalize();
+
+        float y = tyre.IsGrounded ? tyre.GroundPoint.y + 0.05f : tyre.transform.position.y - tyre.radius + 0.05f;
+        Vector3 start = tyre.transform.position + d * (tyre.radius + 0.1f);
+        start.y = y;
+        Vector3 end = start + d * 1.8f;
+
+        guide.SetPosition(0, start);
+        guide.SetPosition(1, end);
+
+        Color col = Color.Lerp(new Color(1f, 1f, 1f, 0.55f), new Color(1f, 0.85f, 0.1f, 0.95f), Mathf.Abs(steer));
+        guide.startColor = col;
+        guide.endColor = new Color(col.r, col.g, col.b, 0.1f);
     }
 }

@@ -53,6 +53,9 @@ public class PlayerMotor : MonoBehaviour
     [Tooltip("Maximum force with which the body can bump the tyre.")]
     public float bodyPushForce = 250f;
     public float turnSharpness = 12f;
+    [Tooltip("Walking into the tyre turns it toward your walking direction. Gain (1/s). 0 = off.")]
+    public float bodyAlignGain = 3f;
+    public float bodyAlignRate = 2.5f;
 
     CharacterController cc;
     Vector3 horizontalVelocity;
@@ -65,6 +68,7 @@ public class PlayerMotor : MonoBehaviour
     float staggerTimer;
     float knockbackCooldown;
     bool precisionLateral;
+    bool lateralLock;
 
     readonly HashSet<string> boolParams = new HashSet<string>();
     readonly RaycastHit[] probeHits = new RaycastHit[8];
@@ -100,6 +104,13 @@ public class PlayerMotor : MonoBehaviour
                 boolParams.Add(p.name);
     }
 
+    /// <summary>Swap the animator when the character is changed at runtime.</summary>
+    public void SetAnimator(Animator a)
+    {
+        animator = a;
+        CacheAnimatorParameters();
+    }
+
     public void SetAnimatorBool(string name, bool value)
     {
         if (animator != null && boolParams.Contains(name))
@@ -121,6 +132,9 @@ public class PlayerMotor : MonoBehaviour
 
     /// <summary>Near the tyre: sideways movement becomes small and gentle (forward movement is unchanged).</summary>
     public void SetPrecisionLateral(bool on) { precisionLateral = on; }
+
+    /// <summary>While the stick pushes, A / D steer the push instead of strafing the player.</summary>
+    public void SetLateralLock(bool on) { lateralLock = on; }
 
     /// <summary>Instant change of horizontal velocity (reaction force * dt / mass).</summary>
     public void ApplyVelocityChange(Vector3 deltaV)
@@ -181,6 +195,7 @@ public class PlayerMotor : MonoBehaviour
             camRight = Vector3.ProjectOnPlane(ct.right, Vector3.up).normalized;
         }
 
+        if (lateralLock) mv.x = 0f;
         Vector3 wish = camForward * mv.y + camRight * mv.x;
         if (wish.sqrMagnitude > 1f) wish.Normalize();
 
@@ -338,11 +353,31 @@ public class PlayerMotor : MonoBehaviour
         if (dir.sqrMagnitude < 1e-4f) return;
         dir.Normalize();
 
+        TyrePhysics tp = rb.GetComponent<TyrePhysics>();
+
+        // For the tyre, push where the player is actually walking (so a walk to the right sends it right).
+        if (tp != null)
+        {
+            Vector3 mv = new Vector3(horizontalVelocity.x, 0f, horizontalVelocity.z);
+            if (mv.sqrMagnitude > 0.25f) dir = mv.normalized;
+        }
+
         Vector3 rbHoriz = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
         float closing = Vector3.Dot(horizontalVelocity - rbHoriz, dir);
         if (closing <= 0f) return;
 
         float force = Mathf.Min(bodyPushForce, mass * closing * 4f);
+
+        if (tp != null)
+        {
+            // Pushed through the centre: no unwanted lean, it simply rolls along with the player,
+            // and its heading follows the walking direction.
+            rb.AddForce(dir * (force * Time.deltaTime), ForceMode.Impulse);
+            if (bodyAlignGain > 0f)
+                tp.AlignHeading(dir, bodyAlignGain, bodyAlignRate, Time.deltaTime, 1f);
+            return;
+        }
+
         rb.AddForceAtPosition(dir * (force * Time.deltaTime), hit.point, ForceMode.Impulse);
     }
 }
