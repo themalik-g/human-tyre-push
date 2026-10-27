@@ -7,7 +7,7 @@ using UnityEngine.InputSystem;
 ///
 ///   Move   WASD / Left stick          Run    Shift / L3
 ///   Look   Mouse / Right stick        Jump   Space / A (Cross)
-///   Push   Left mouse / RT (R2)       Brace  Right mouse / LT (L2)
+///   Push   Left mouse or E / RT (R2)  Brace  Right mouse or Q / LT (L2)
 ///   Reset tyre  R / Y (Triangle)
 /// </summary>
 public class TyreGameInput : MonoBehaviour
@@ -51,10 +51,12 @@ public class TyreGameInput : MonoBehaviour
 
         push = new InputAction("Push", InputActionType.Value, null, null, null, "Axis");
         push.AddBinding("<Mouse>/leftButton");
+        push.AddBinding("<Keyboard>/e");            // for laptops without mouse buttons
         push.AddBinding("<Gamepad>/rightTrigger");
 
         brace = new InputAction("Brace", InputActionType.Value, null, null, null, "Axis");
         brace.AddBinding("<Mouse>/rightButton");
+        brace.AddBinding("<Keyboard>/q");           // for laptops without mouse buttons
         brace.AddBinding("<Gamepad>/leftTrigger");
 
         reset = new InputAction("ResetTyre", InputActionType.Button);

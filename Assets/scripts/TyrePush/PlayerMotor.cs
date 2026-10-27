@@ -30,6 +30,12 @@ public class PlayerMotor : MonoBehaviour
     public float coyoteTime = 0.12f;
     public float jumpBufferTime = 0.12f;
 
+    [Header("Precision near the tyre")]
+    [Tooltip("Sideways speed limit (m/s) while close to the tyre. One tap of A or D then moves about 5 to 9 cm.")]
+    public float precisionLateralSpeed = 0.9f;
+    public float precisionLateralAccel = 8f;
+    public float precisionLateralDecel = 12f;
+
     [Header("Knockback (tyre hitting the player)")]
     public TyrePhysics tyre;
     [Tooltip("Bounciness of the hit. 0 = dead stop, 1 = perfect rebound.")]
@@ -58,6 +64,7 @@ public class PlayerMotor : MonoBehaviour
     Vector3 facing;
     float staggerTimer;
     float knockbackCooldown;
+    bool precisionLateral;
 
     readonly HashSet<string> boolParams = new HashSet<string>();
     readonly RaycastHit[] probeHits = new RaycastHit[8];
@@ -111,6 +118,9 @@ public class PlayerMotor : MonoBehaviour
     }
 
     public void ClearFacing() { hasFacing = false; }
+
+    /// <summary>Near the tyre: sideways movement becomes small and gentle (forward movement is unchanged).</summary>
+    public void SetPrecisionLateral(bool on) { precisionLateral = on; }
 
     /// <summary>Instant change of horizontal velocity (reaction force * dt / mass).</summary>
     public void ApplyVelocityChange(Vector3 deltaV)
@@ -185,7 +195,24 @@ public class PlayerMotor : MonoBehaviour
         else rate = desired.sqrMagnitude > 0.0001f ? groundAcceleration : groundDeceleration;
         if (staggered) rate *= 0.2f; // stride interrupted: the legs cannot respond quickly
 
-        horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, desired, rate * dt);
+        if (precisionLateral && Grounded)
+        {
+            // Forward/back keeps the normal feel. Sideways is slow and gentle, so a tap of A or D
+            // shifts the stick across the tyre in small, predictable steps.
+            float vF = Vector3.Dot(horizontalVelocity, camForward);
+            float vR = Vector3.Dot(horizontalVelocity, camRight);
+            float dF = Vector3.Dot(desired, camForward);
+            float dR = Mathf.Clamp(Vector3.Dot(desired, camRight), -precisionLateralSpeed, precisionLateralSpeed);
+
+            vF = Mathf.MoveTowards(vF, dF, rate * dt);
+            vR = Mathf.MoveTowards(vR, dR, (Mathf.Abs(dR) > 0.01f ? precisionLateralAccel : precisionLateralDecel) * dt);
+
+            horizontalVelocity = camForward * vF + camRight * vR;
+        }
+        else
+        {
+            horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, desired, rate * dt);
+        }
 
         // --- vertical ----------------------------------------------------
         if (Grounded && verticalVelocity < 0f) verticalVelocity = -2f;

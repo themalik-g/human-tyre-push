@@ -9,8 +9,7 @@ using UnityEngine;
 ///   Hit slightly off the centre line -> a small yaw/lean, a small deflection from the straight path.
 ///   Hit far off the centre line (shoulder, sidewall) -> a large deflection.
 ///
-/// Where the stick lands is where you aim: the camera direction, helped by a partial aim assist
-/// towards the tyre. The stick pushes along its own axis, limited by the friction cone, so the
+/// Where the stick lands is where you aim: how far you stand or look to the side of the tyre centre. The stick pushes along its own axis, limited by the friction cone, so the
 /// angle you approach at matters.
 ///
 ///  PUSH  (LMB / RT held)  the tip follows your hand speed. The tyre ends up rolling at your pace.
@@ -40,10 +39,18 @@ public class StickTool : MonoBehaviour
     [Tooltip("Right hand position relative to the player (right, up, forward).")]
     public Vector3 gripLocalOffset = new Vector3(0.28f, 1.05f, 0.30f);
 
-    [Header("Aiming")]
-    [Range(0f, 1f)]
-    [Tooltip("0 = the stick goes exactly where the camera points (hard). 1 = it always finds the tyre centre (no steering).")]
-    public float aimAssist = 0.35f;
+    [Header("Aiming (fine control)")]
+    [Range(0f, 1.5f)]
+    [Tooltip("How far the contact point moves across the tyre per metre you move or aim sideways. 0.8 means 10 cm of side movement moves the hit by 8 cm.")]
+    public float lateralAimGain = 0.8f;
+    [Tooltip("Furthest the stick can land from the tyre centre line (m). Tread half-width is about 0.12, so 0.3 reaches past the shoulder.")]
+    public float maxLateralAim = 0.3f;
+    [Tooltip("Within this distance (m) of the tyre the character holds still facing the camera, sideways steps get small and mouse turning slows down.")]
+    public float nearTyreEnter = 3.2f;
+    public float nearTyreExit = 3.8f;
+    [Range(0.1f, 1f)]
+    [Tooltip("Mouse/stick look speed multiplier while near the tyre. Lower = finer aim.")]
+    public float nearTyreLookScale = 0.4f;
 
     [Header("Forces (Newtons)")]
     [Tooltip("Highest steady push a person can hold with a stick.")]
@@ -125,6 +132,7 @@ public class StickTool : MonoBehaviour
     float braceLeanPrev;
     bool braceLeanPrevValid;
 
+    bool wasNear;
     float appliedForce;      // slew-limited normal force
     float surgeTime;
     bool startedFromRest;
@@ -156,8 +164,10 @@ public class StickTool : MonoBehaviour
         if (player != null)
         {
             player.ClearFacing();
+            player.SetPrecisionLateral(false);
             player.SetAnimatorBool("hitTyre", false);
         }
+        if (cam != null) cam.lookScale = 1f;
     }
 
     // ------------------------------------------------------------------
@@ -284,12 +294,11 @@ public class StickTool : MonoBehaviour
 
         // --- aim ---------------------------------------------------------
         Transform pt = player.transform;
-        Vector3 localGrip = gripLocalOffset;
-        if (engaged) localGrip.x = 0.08f; // Align hand towards chest/center line during push/poke
-        Vector3 grip = pt.TransformPoint(localGrip);
-
+        Vector3 grip = pt.TransformPoint(gripLocalOffset);
         Vector3 dirTarget;
         InRange = false;
+
+        bool near = false;
 
         if (tyre != null)
         {
@@ -299,27 +308,34 @@ public class StickTool : MonoBehaviour
                 ? 0.85f
                 : Mathf.Lerp(0.9f, 0.1f, Mathf.InverseLerp(0f, 35f, pitch));
 
-            Vector3 aimPoint = c + Vector3.up * (tyre.radius * ratio);
+            Vector3 camFlat = cam != null ? Quaternion.Euler(0f, cam.Yaw, 0f) * Vector3.forward : pt.forward;
+            Vector3 camRight = Vector3.Cross(Vector3.up, camFlat);
+
+            Vector3 playerToTyre = c - pt.position;
+            playerToTyre.y = 0f;
+
+            Vector3 toFlat = c - grip;
+            toFlat.y = 0f;
+            near = toFlat.magnitude < (wasNear ? nearTyreExit : nearTyreEnter);
+
+            // Lateral aim: calculate miss relative to player/camera center line (pt.position)
+            // so straight-ahead aiming hits the exact center of the tyre with zero lateral offset.
+            float miss = -Vector3.Dot(playerToTyre, camRight);
+            float lateral = Mathf.Clamp(miss * lateralAimGain, -maxLateralAim, maxLateralAim);
+
+            Vector3 aimPoint = c + Vector3.up * (tyre.radius * ratio) + camRight * lateral;
             Vector3 to = aimPoint - grip;
             bool reachable = to.magnitude <= length + pokeReach + tyre.radius;
             InRange = reachable && Vector3.Dot(pt.forward, to.normalized) > 0.2f;
 
-            Vector3 camFlat = cam != null ? Quaternion.Euler(0f, cam.Yaw, 0f) * Vector3.forward : pt.forward;
-
             if (engaged && reachable)
-            {
-                Vector3 camDir = cam != null ? cam.transform.forward : pt.forward;
-                Vector3 playerCenter = pt.position + Vector3.up * 1.05f;
-                Vector3 towards = (aimPoint - playerCenter).normalized;
-
-                dirTarget = Vector3.Slerp(camDir, towards, aimAssist).normalized;
-            }
+                dirTarget = to.normalized;
             else
-            {
-                dirTarget = Quaternion.AngleAxis(engaged ? 25f : 50f, pt.right) * (engaged ? camFlat : pt.forward);
-            }
+                dirTarget = Quaternion.AngleAxis(engaged ? 25f : 50f, pt.right) * ((engaged || near) ? camFlat : pt.forward);
 
-            if (engaged) player.SetFacing(camFlat);
+            // Near the tyre the body always faces where the camera looks, so a sideways step
+            // does not swing the body (and the stick) round before the stroke.
+            if (engaged || near) player.SetFacing(camFlat);
             else player.ClearFacing();
         }
         else
@@ -327,6 +343,10 @@ public class StickTool : MonoBehaviour
             dirTarget = Quaternion.AngleAxis(50f, pt.right) * pt.forward;
             player.ClearFacing();
         }
+
+        wasNear = near;
+        player.SetPrecisionLateral(near);
+        if (cam != null) cam.lookScale = near ? nearTyreLookScale : 1f;
 
         float k = engaged ? 20f : 8f;
         dirCurrent = Vector3.Slerp(dirCurrent, dirTarget, 1f - Mathf.Exp(-k * dt)).normalized;
@@ -342,6 +362,7 @@ public class StickTool : MonoBehaviour
     {
         appliedForce = 0f;
         braceLeanPrevValid = false;
+        if (tyre != null) tyre.WobbleDamping = 0f;
     }
 
     void FixedUpdate()
@@ -453,6 +474,9 @@ public class StickTool : MonoBehaviour
                 braceLeanPrevValid = false;
             }
         }
+
+        // A firmly braced tyre wobbles much less; a tyre being pushed wobbles a little less.
+        tyre.WobbleDamping = CurrentMode == Mode.Brace ? Mathf.Clamp01(braceValue) * 0.85f : 0.3f;
 
         // One call gives the Rigidbody both a push and a torque (r x F), exactly like AddForce + AddTorque.
         tyre.Body.AddForceAtPosition(force, point, ForceMode.Force);

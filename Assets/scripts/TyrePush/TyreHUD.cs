@@ -97,27 +97,33 @@ public class TyreHUD : MonoBehaviour
         if (showControlsHint)
         {
             TextMeshProUGUI hint = NewText("Controls", root,
-                "WASD move   Shift run   Space jump   Mouse look   LMB push / poke   RMB brace   R reset tyre / restart",
-                22f, new Color(1f, 1f, 1f, 0.7f), TextAlignmentOptions.Bottom, FontStyles.Normal);
-            SetRect(hint.rectTransform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 16f), new Vector2(1200f, 34f));
+                "WASD Move | Shift Run | Space Jump | Mouse Look | LMB / E Push | RMB / Q Brace | R Reset",
+                24f, new Color(1f, 1f, 1f, 0.85f), TextAlignmentOptions.Bottom, FontStyles.Bold);
+            SetRect(hint.rectTransform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 20f), new Vector2(1400f, 38f));
         }
     }
 
     void BuildBar(Transform root, string label, bool left, Color fillColor, bool withMarker,
                   out RectTransform fill, out RectTransform marker, out TextMeshProUGUI valueText)
     {
-        const float W = 460f;
-        const float H = 26f;
+        const float W = 480f;
+        const float H = 30f;
 
         Vector2 anchor = left ? new Vector2(0f, 0f) : new Vector2(1f, 0f);
 
-        RectTransform holder = NewRect(label + " Bar", root);
-        SetRect(holder, anchor, anchor, anchor, new Vector2(left ? 60f : -60f, 64f), new Vector2(W, H));
+        // Panel background for elevated UI look
+        RectTransform panel = NewRect(label + " Panel", root);
+        SetRect(panel, anchor, anchor, anchor, new Vector2(left ? 50f : -50f, 60f), new Vector2(W + 30f, H + 55f));
+        Image panelBg = NewImage("PanelBg", panel, new Color(0.08f, 0.08f, 0.10f, 0.85f));
+        Stretch(panelBg.rectTransform, 0f);
 
-        Image frame = NewImage("Frame", holder, new Color(0.72f, 0.72f, 0.72f, 0.9f));
+        RectTransform holder = NewRect(label + " Bar", panel);
+        SetRect(holder, new Vector2(0.5f, 0.35f), new Vector2(0.5f, 0.35f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(W, H));
+
+        Image frame = NewImage("Frame", holder, new Color(0.85f, 0.85f, 0.88f, 0.95f));
         Stretch(frame.rectTransform, 0f);
 
-        Image track = NewImage("Track", holder, new Color(0.13f, 0.13f, 0.14f, 0.92f));
+        Image track = NewImage("Track", holder, new Color(0.11f, 0.11f, 0.13f, 0.95f));
         Stretch(track.rectTransform, 2f);
 
         Image fillImg = NewImage("Fill", track.rectTransform, fillColor);
