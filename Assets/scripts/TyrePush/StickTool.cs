@@ -43,7 +43,7 @@ public class StickTool : MonoBehaviour
     [Header("Aiming")]
     [Range(0f, 1f)]
     [Tooltip("0 = the stick goes exactly where the camera points (hard). 1 = it always finds the tyre centre (no steering).")]
-    public float aimAssist = 0.65f;
+    public float aimAssist = 0.35f;
 
     [Header("Forces (Newtons)")]
     [Tooltip("Highest steady push a person can hold with a stick.")]
@@ -284,7 +284,10 @@ public class StickTool : MonoBehaviour
 
         // --- aim ---------------------------------------------------------
         Transform pt = player.transform;
-        Vector3 grip = pt.TransformPoint(gripLocalOffset);
+        Vector3 localGrip = gripLocalOffset;
+        if (engaged) localGrip.x = 0.08f; // Align hand towards chest/center line during push/poke
+        Vector3 grip = pt.TransformPoint(localGrip);
+
         Vector3 dirTarget;
         InRange = false;
 
@@ -305,12 +308,9 @@ public class StickTool : MonoBehaviour
 
             if (engaged && reachable)
             {
-                // Where the camera points, same horizontal distance and height as the tyre aim point,
-                // then pulled part of the way towards the tyre centre (aim assist).
-                Vector3 towards = to.normalized;
-                Vector3 toFlat = new Vector3(to.x, 0f, to.z);
-                Vector3 camDir = (camFlat * toFlat.magnitude + Vector3.up * to.y).normalized;
-                if (Vector3.Dot(camDir, towards) < 0.2f) camDir = towards;
+                Vector3 camDir = cam != null ? cam.transform.forward : pt.forward;
+                Vector3 playerCenter = pt.position + Vector3.up * 1.05f;
+                Vector3 towards = (aimPoint - playerCenter).normalized;
 
                 dirTarget = Vector3.Slerp(camDir, towards, aimAssist).normalized;
             }

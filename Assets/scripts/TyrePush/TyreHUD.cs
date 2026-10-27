@@ -28,10 +28,14 @@ public class TyreHUD : MonoBehaviour
 
     GameObject runEndedRoot;
     TextMeshProUGUI runEndedReason;
+    GameObject levelCompleteRoot;
+    TextMeshProUGUI levelCompleteTitle;
     Image rangeDot;
     TextMeshProUGUI rangeText;
     bool pendingEnded;
     string pendingReason = "";
+    bool pendingWin;
+    string pendingWinText = "";
 
     RectTransform balanceFill, balanceMarker, speedFill;
     Image balanceMarkerImage;
@@ -88,6 +92,7 @@ public class TyreHUD : MonoBehaviour
 
         BuildRangeBadge(root);
         BuildRunEnded(root);
+        BuildLevelComplete(root);
 
         if (showControlsHint)
         {
@@ -192,6 +197,36 @@ public class TyreHUD : MonoBehaviour
         SetRect(hint.rectTransform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -90f), new Vector2(1200f, 50f));
 
         runEndedRoot.SetActive(pendingEnded);
+    }
+
+    void BuildLevelComplete(Transform root)
+    {
+        RectTransform panel = NewRect("Level Complete", root);
+        Stretch(panel, 0f);
+        levelCompleteRoot = panel.gameObject;
+
+        Image dim = NewImage("Dim", panel, new Color(0f, 0f, 0f, 0.65f));
+        Stretch(dim.rectTransform, 0f);
+
+        levelCompleteTitle = NewText("Title", panel, "LEVEL COMPLETE!", 90f, Green, TextAlignmentOptions.Center, FontStyles.Bold);
+        SetRect(levelCompleteTitle.rectTransform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 50f), new Vector2(1200f, 120f));
+
+        TextMeshProUGUI hint = NewText("Hint", panel, "Press Space / Enter / R to load next level", 36f, White, TextAlignmentOptions.Center, FontStyles.Normal);
+        SetRect(hint.rectTransform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -50f), new Vector2(1200f, 60f));
+
+        levelCompleteRoot.SetActive(pendingWin);
+    }
+
+    public void SetLevelComplete(bool complete, string titleText = "LEVEL COMPLETE!")
+    {
+        pendingWin = complete;
+        pendingWinText = titleText;
+
+        if (levelCompleteRoot != null)
+        {
+            levelCompleteRoot.SetActive(complete);
+            if (levelCompleteTitle != null) levelCompleteTitle.text = pendingWinText;
+        }
     }
 
     /// <summary>Shows or hides the RUN ENDED screen (tyre or player fell off the track).</summary>

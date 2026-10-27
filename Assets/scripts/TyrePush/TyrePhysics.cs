@@ -353,6 +353,17 @@ public class TyrePhysics : MonoBehaviour
                 float ramp = Mathf.Min(1f, s / 0.03f); // avoids chatter around zero speed
                 Body.AddForce(-vAlong / s * (crr * normalForce * ramp), ForceMode.Force);
             }
+
+            // Wobble torque when slowing down or leaning (gyroscopic instability simulation)
+            float leanY = Mathf.Abs(transform.right.y); // 0 when vertical, > 0 when leaning
+            if (s < 3.5f && (s > 0.1f || leanY > 0.05f))
+            {
+                float wobbleIntensity = Mathf.Clamp01((3.5f - s) / 3.4f) * (0.1f + leanY * 2.0f);
+                float wobbleFreq = Mathf.Lerp(4f, 12f, s / 3.5f);
+                Vector3 rollAxis = transform.forward;
+                float wobbleTorque = Mathf.Sin(Time.time * wobbleFreq) * 1.5f * wobbleIntensity * Body.mass;
+                Body.AddTorque(rollAxis * wobbleTorque, ForceMode.Force);
+            }
         }
     }
 
