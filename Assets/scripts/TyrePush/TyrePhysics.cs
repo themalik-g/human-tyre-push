@@ -16,17 +16,17 @@ using UnityEngine;
 public class TyrePhysics : MonoBehaviour
 {
     [Header("Real-world size and mass")]
-    [Tooltip("Outer radius in metres. 0.36 is roughly a 15 inch car tyre.")]
-    public float radius = 0.36f;
+    [Tooltip("Outer radius in metres. 0.52 is a large, highly visible tyre (~1.04m diameter).")]
+    public float radius = 0.52f;
 
-    [Tooltip("Mass in kg. A car tyre is about 8-12 kg.")]
-    public float mass = 10f;
+    [Tooltip("Mass in kg.")]
+    public float mass = 14f;
 
     [Tooltip("Tyre width in metres. Only used when no model is assigned (a model sets its own width).")]
-    public float defaultWidth = 0.24f;
+    public float defaultWidth = 0.32f;
 
     [Tooltip("Radial thickness of the tread shell. Also sets how rounded the tread shoulders are.")]
-    public float treadThickness = 0.07f;
+    public float treadThickness = 0.08f;
 
     [Range(0.3f, 0.8f)]
     [Tooltip("Hollow centre radius as a fraction of the outer radius. There is no rim: the centre is empty.")]
@@ -44,8 +44,8 @@ public class TyrePhysics : MonoBehaviour
     [Range(0f, 0.6f)] public float bounciness = 0.15f;
 
     [Header("Resistance (real-world values)")]
-    [Tooltip("Rolling resistance coefficient. Asphalt ~0.015, packed dirt ~0.05, loose sand ~0.1. Makes the tyre lose speed when not pushed.")]
-    public float rollingResistance = 0.06f;
+    [Tooltip("Rolling resistance coefficient. Asphalt ~0.015, packed dirt ~0.05, loose sand ~0.1. A free tyre keeps rolling on its own momentum and slowly loses speed.")]
+    public float rollingResistance = 0.05f;
 
     [Tooltip("Resistance multiplier at standstill. Gives a real breakaway: a resting tyre needs a firmer push than a rolling one.")]
     public float breakawayFactor = 1.6f;
@@ -58,6 +58,30 @@ public class TyrePhysics : MonoBehaviour
 
     [Tooltip("Drag coefficient of the tyre seen from the front.")]
     public float dragCoefficient = 1.0f;
+
+    [Header("Turning (a leaned rolling tyre curves, like a hoop or a bicycle wheel)")]
+    [Range(0f, 1.5f)]
+    [Tooltip("How strongly a leaned rolling tyre curves towards its lean. It only fills in the turn the contact physics does not already give. 0 = off.")]
+    public float turnAssist = 1.2f;
+    [Tooltip("How quickly the turn catches up with the lean (1/s).")]
+    public float turnResponse = 8f;
+    [Tooltip("Largest turning torque (N m).")]
+    public float maxTurnTorque = 35f;
+
+    [Header("Wobble (looks about to fall as it slows)")]
+    public bool wobble = true;
+    [Tooltip("Wobble starts below this speed (m/s) and grows as the tyre slows.")]
+    public float wobbleBelowSpeed = 3f;
+    [Tooltip("Peak wobble torque (N m). 0 = off.")]
+    public float wobbleStrength = 3.5f;
+    [Tooltip("Wobble speed (Hz). It rises a little as the tyre slows.")]
+    public float wobbleFrequency = 1.3f;
+    [Range(0f, 1.5f)]
+    [Tooltip("How strongly a leaning slow tyre leans further. Higher = falls over sooner.")]
+    public float wobbleGrowth = 0.5f;
+
+    /// <summary>0..1, set by the stick: a braced or pushed tyre wobbles less.</summary>
+    public float WobbleDamping { get; set; }
 
     // ------------------------------------------------------------------
     public Rigidbody Body { get; private set; }
@@ -111,6 +135,7 @@ public class TyrePhysics : MonoBehaviour
     Collider groundCollider;
     Collider tintSource;
     float lastLeanSign = 1f;
+    float wobblePhase;
 
     // ------------------------------------------------------------------
     void Awake()
@@ -174,7 +199,7 @@ public class TyrePhysics : MonoBehaviour
         MeshRenderer mr = go.AddComponent<MeshRenderer>();
         mr.sharedMaterial = visualMaterial != null
             ? visualMaterial
-            : TyreUtil.MakeMaterial(new Color(0.06f, 0.06f, 0.065f), 0.25f);
+            : TyreUtil.MakeHighContrastTyreMaterial();
 
         visual = go.transform;
     }
@@ -353,17 +378,74 @@ public class TyrePhysics : MonoBehaviour
                 float ramp = Mathf.Min(1f, s / 0.03f); // avoids chatter around zero speed
                 Body.AddForce(-vAlong / s * (crr * normalForce * ramp), ForceMode.Force);
             }
+        }
 
-            // Wobble torque when slowing down or leaning (gyroscopic instability simulation)
-            float leanY = Mathf.Abs(transform.right.y); // 0 when vertical, > 0 when leaning
-            if (s < 3.5f && (s > 0.1f || leanY > 0.05f))
+        ApplyRollingDynamics(v);
+    }
+
+
+    // ------------------------------------------------------------------
+    // Rolling dynamics: lean steering and slow-speed wobble
+    // ------------------------------------------------------------------
+    void ApplyRollingDynamics(Vector3 v)
+    {
+        if (!IsGrounded || !IsStanding) return;
+
+        Vector3 vH = new Vector3(v.x, 0f, v.z);
+        float speed = vH.magnitude;
+        if (speed < 0.3f) return;
+
+        Vector3 axle = Body.rotation * Vector3.right;
+        Vector3 heading = Vector3.Cross(axle, Vector3.up);
+        if (heading.sqrMagnitude < 1e-4f) return;
+        heading.Normalize();
+        if (Vector3.Dot(heading, vH) < 0f) heading = -heading;
+        Vector3 right = Vector3.Cross(Vector3.up, heading);
+
+        Vector3 sH = new Vector3(axle.x, 0f, axle.z);
+        float sm = sH.magnitude;
+        if (sm < 0.3f) return;
+        sH /= sm;
+
+        // + = the top of the tyre leans to the right of its direction of travel (radians, small angles)
+        float leanRight = -axle.y * Vector3.Dot(sH, right);
+        float dt = Time.fixedDeltaTime;
+
+        // --- Turning ------------------------------------------------------
+        // A rolling wheel that leans curves towards its lean: yaw rate = g tan(lean) / speed.
+        // Positive yaw (about +Y) is a right turn. We only add the turn that is missing, so hits that
+        // already yaw the tyre (off-centre pushes) are never fought.
+        if (turnAssist > 0f)
+        {
+            Vector3 w = Body.angularVelocity;
+            float spin = Vector3.Dot(w, axle);
+            float yawRate = Vector3.Dot(w, Vector3.up) - spin * axle.y; // heading change, not axle tilt
+
+            float target = Physics.gravity.magnitude * Mathf.Tan(Mathf.Clamp(leanRight, -0.7f, 0.7f)) / Mathf.Max(speed, 1f);
+            float deficit = target - yawRate;
+
+            if (deficit * target > 0f)
             {
-                float wobbleIntensity = Mathf.Clamp01((3.5f - s) / 3.4f) * (0.1f + leanY * 2.0f);
-                float wobbleFreq = Mathf.Lerp(4f, 12f, s / 3.5f);
-                Vector3 rollAxis = transform.forward;
-                float wobbleTorque = Mathf.Sin(Time.time * wobbleFreq) * 1.5f * wobbleIntensity * Body.mass;
-                Body.AddTorque(rollAxis * wobbleTorque, ForceMode.Force);
+                float torque = Mathf.Clamp(Body.inertiaTensor.y * turnResponse * deficit * turnAssist, -maxTurnTorque, maxTurnTorque);
+                Body.AddTorque(Vector3.up * torque, ForceMode.Force);
             }
+        }
+
+        // --- Wobble -------------------------------------------------------
+        // Below a critical speed the tyre loses its self-stability: it snakes and leans in turn, and the
+        // lean feeds itself (inverted pendulum). Stronger the slower it goes. A braced tyre calms down.
+        if (wobble && wobbleStrength > 0f && speed < wobbleBelowSpeed)
+        {
+            float k = Mathf.Clamp01((wobbleBelowSpeed - speed) / Mathf.Max(0.1f, wobbleBelowSpeed - 0.3f));
+            k = k * k * (3f - 2f * k);
+            float calm = 1f - Mathf.Clamp01(WobbleDamping);
+
+            wobblePhase += Mathf.PI * 2f * wobbleFrequency * (1f + 0.6f * k) * dt;
+            float osc = Mathf.Sin(wobblePhase) + 0.7f * (Mathf.PerlinNoise(Time.time * 2.3f, 0.7f) - 0.5f);
+
+            float gravityTorque = Body.mass * Physics.gravity.magnitude * radius;
+            float torque = (wobbleStrength * osc - wobbleGrowth * gravityTorque * leanRight) * k * calm;
+            Body.AddTorque(heading * torque, ForceMode.Force);
         }
     }
 

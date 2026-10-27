@@ -29,6 +29,9 @@ public class ThirdPersonCamera : MonoBehaviour
     public float collisionRadius = 0.25f;
     public bool lockCursor = true;
 
+    /// <summary>Look speed multiplier. The stick tool lowers it near the tyre for finer aim.</summary>
+    [HideInInspector] public float lookScale = 1f;
+
     /// <summary>Camera heading in degrees.</summary>
     public float Yaw { get; private set; }
 
@@ -71,9 +74,9 @@ public class ThirdPersonCamera : MonoBehaviour
         if (input != null)
         {
             if (Cursor.lockState == CursorLockMode.Locked)
-                look += input.MouseLook * mouseSensitivity;
+                look += input.MouseLook * (mouseSensitivity * lookScale);
 
-            look += input.StickLook * (stickSensitivity * Time.deltaTime);
+            look += input.StickLook * (stickSensitivity * Time.deltaTime * lookScale);
         }
 
         Yaw += look.x;

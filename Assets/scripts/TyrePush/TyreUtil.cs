@@ -25,6 +25,94 @@ public static class TyreUtil
         return m;
     }
 
+    static Texture2D tyreTex;
+    static Material highContrastTyreMat;
+
+    public static Texture2D HighContrastTyreTexture()
+    {
+        if (tyreTex != null) return tyreTex;
+
+        const int w = 512;
+        const int h = 256;
+
+        tyreTex = new Texture2D(w, h, TextureFormat.RGBA32, true);
+        tyreTex.name = "HighContrastTyreTex";
+        tyreTex.wrapMode = TextureWrapMode.Repeat;
+        tyreTex.filterMode = FilterMode.Bilinear;
+
+        Color darkRubber = new Color(0.10f, 0.10f, 0.11f, 1f);
+        Color treadRubber = new Color(0.06f, 0.06f, 0.07f, 1f);
+        Color whiteMark = new Color(0.95f, 0.95f, 0.95f, 1f);
+        Color yellowMark = new Color(0.98f, 0.75f, 0.12f, 1f);
+
+        Color[] px = new Color[w * h];
+
+        for (int y = 0; y < h; y++)
+        {
+            float v = y / (float)h;
+
+            bool isLeftSidewall = (v >= 0.12f && v <= 0.32f);
+            bool isRightSidewall = (v >= 0.68f && v <= 0.88f);
+            bool isTread = (v > 0.32f && v < 0.68f);
+
+            bool isWhiteRing = (Mathf.Abs(v - 0.22f) < 0.025f) || (Mathf.Abs(v - 0.78f) < 0.025f);
+            bool isYellowRing = (Mathf.Abs(v - 0.16f) < 0.012f) || (Mathf.Abs(v - 0.84f) < 0.012f);
+
+            for (int x = 0; x < w; x++)
+            {
+                float u = x / (float)w;
+                Color col = darkRubber;
+
+                if (isTread)
+                {
+                    col = treadRubber;
+                    float stripe = (u * 8f) % 1f;
+                    if (stripe < 0.08f)
+                        col = Color.Lerp(col, whiteMark, 0.85f);
+                }
+                else if (isLeftSidewall || isRightSidewall)
+                {
+                    if (isWhiteRing) col = whiteMark;
+                    else if (isYellowRing) col = yellowMark;
+
+                    float block = (u * 8f) % 1f;
+                    if (block < 0.25f && ((v >= 0.14f && v <= 0.30f) || (v >= 0.70f && v <= 0.86f)))
+                    {
+                        if (block < 0.12f) col = yellowMark;
+                        else col = whiteMark;
+                    }
+                }
+
+                px[y * w + x] = col;
+            }
+        }
+
+        tyreTex.SetPixels(px);
+        tyreTex.Apply();
+        return tyreTex;
+    }
+
+    public static Material MakeHighContrastTyreMaterial()
+    {
+        if (highContrastTyreMat != null) return highContrastTyreMat;
+
+        Shader sh = Shader.Find("Universal Render Pipeline/Lit");
+        if (sh == null) sh = Shader.Find("Standard");
+        if (sh == null) sh = Shader.Find("Sprites/Default");
+
+        highContrastTyreMat = new Material(sh);
+        highContrastTyreMat.name = "HighContrastTyreMat";
+        Texture2D tex = HighContrastTyreTexture();
+        highContrastTyreMat.mainTexture = tex;
+        if (highContrastTyreMat.HasProperty("_BaseMap")) highContrastTyreMat.SetTexture("_BaseMap", tex);
+        if (highContrastTyreMat.HasProperty("_BaseColor")) highContrastTyreMat.SetColor("_BaseColor", Color.white);
+        if (highContrastTyreMat.HasProperty("_Color")) highContrastTyreMat.SetColor("_Color", Color.white);
+        if (highContrastTyreMat.HasProperty("_Glossiness")) highContrastTyreMat.SetFloat("_Glossiness", 0.4f);
+        if (highContrastTyreMat.HasProperty("_Smoothness")) highContrastTyreMat.SetFloat("_Smoothness", 0.4f);
+
+        return highContrastTyreMat;
+    }
+
     public static void ApplyMaterial(GameObject go, Material material)
     {
         if (go == null || material == null) return;
