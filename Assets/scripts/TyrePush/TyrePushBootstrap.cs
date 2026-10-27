@@ -41,6 +41,10 @@ public class TyrePushBootstrap : MonoBehaviour
     [Tooltip("Dust, tread marks, rolling/impact sound, stick hit puff, controller rumble and camera kick.")]
     public bool contactFeedback = true;
 
+    [Header("Levels")]
+    public int currentLevel = 1;
+    public int maxLevel = 3;
+
     [Header("HUD")]
     public bool showObjective = true;
     public string objectiveText = "Reach the top of the hill.";
@@ -48,8 +52,11 @@ public class TyrePushBootstrap : MonoBehaviour
     public PlayerMotor Player { get; private set; }
     public TyrePhysics Tyre { get; private set; }
     public bool RunEnded { get; private set; }
+    public bool LevelCompleted { get; private set; }
 
     TyreHUD hud;
+    Vector3 currentSummitPos;
+    GameObject arenaContainer;
 
     // ------------------------------------------------------------------
     void Awake()
@@ -69,13 +76,24 @@ public class TyrePushBootstrap : MonoBehaviour
     {
         if (Player == null || Tyre == null) return;
 
-        if (!RunEnded)
+        if (!RunEnded && !LevelCompleted)
         {
             if (Tyre.transform.position.y < fallY) EndRun("The tyre fell off the track");
             else if (Player.transform.position.y < fallY) EndRun("You fell off the track");
+            else if (Mathf.Abs(Tyre.transform.right.y) > 0.65f && Tyre.IsGrounded) EndRun("The tyre fell down!");
+
+            // Check summit reach
+            if (Vector3.Distance(Tyre.transform.position, currentSummitPos) < 4.0f)
+            {
+                CompleteLevel();
+            }
         }
 
-        if (Player.input != null && Player.input.ResetPressed)
+        if (LevelCompleted && (Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return) || (Player.input != null && Player.input.ResetPressed)))
+        {
+            NextLevel();
+        }
+        else if (Player.input != null && Player.input.ResetPressed)
         {
             if (RunEnded) RestartRun();
             else ResetTyre();
@@ -88,10 +106,35 @@ public class TyrePushBootstrap : MonoBehaviour
         if (hud != null) hud.SetRunEnded(true, reason);
     }
 
+    void CompleteLevel()
+    {
+        LevelCompleted = true;
+        if (hud != null) hud.SetLevelComplete(true, currentLevel < maxLevel ? $"LEVEL {currentLevel} COMPLETE!" : "ALL LEVELS COMPLETED!");
+    }
+
+    void NextLevel()
+    {
+        LevelCompleted = false;
+        if (hud != null) hud.SetLevelComplete(false);
+
+        if (currentLevel < maxLevel)
+            currentLevel++;
+        else
+            currentLevel = 1;
+
+        if (buildTestArena) BuildArena();
+        RestartRun();
+    }
+
     void RestartRun()
     {
         RunEnded = false;
-        if (hud != null) hud.SetRunEnded(false, "");
+        LevelCompleted = false;
+        if (hud != null)
+        {
+            hud.SetRunEnded(false, "");
+            hud.SetLevelComplete(false);
+        }
 
         Player.Teleport(playerSpawn);
         Player.transform.rotation = Quaternion.identity;
@@ -132,41 +175,87 @@ public class TyrePushBootstrap : MonoBehaviour
     // ------------------------------------------------------------------
     void BuildArena()
     {
+        if (arenaContainer != null) Destroy(arenaContainer);
+        arenaContainer = new GameObject("Arena Container");
+
         Material sand = TyreUtil.MakeMaterial(new Color(0.62f, 0.57f, 0.48f), 0.1f);
         Material hazard = TyreUtil.MakeMaterial(new Color(0.90f, 0.70f, 0.10f), 0.2f);
         Material dark = TyreUtil.MakeMaterial(new Color(0.12f, 0.12f, 0.13f), 0.1f);
         Material orange = TyreUtil.MakeMaterial(new Color(0.95f, 0.35f, 0.10f), 0.2f);
 
-        const float width = 3.5f;
+        float width = currentLevel == 1 ? 4.5f : (currentLevel == 2 ? 3.5f : 2.5f);
 
-        // start platform and the long narrow straight
+        // start platform
         Box("StartPlatform", new Vector3(0f, -0.5f, 0f), Quaternion.identity, new Vector3(8f, 1f, 10f), sand);
-        Box("Track", new Vector3(0f, -0.5f, 25f), Quaternion.identity, new Vector3(width, 1f, 40f), sand);
 
-        // barriers the tyre can hit (it bounces, loses energy, or stops)
-        Barrier("Barrier A", new Vector3(-0.7f, 0.35f, 16f), hazard, dark);
-        Barrier("Barrier B", new Vector3(0.7f, 0.35f, 26f), hazard, dark);
-        Barrier("Barrier C", new Vector3(-0.6f, 0.35f, 36f), hazard, dark);
+        if (currentLevel == 1)
+        {
+            // Level 1: Wide straight track with few barriers
+            Box("Track", new Vector3(0f, -0.5f, 25f), Quaternion.identity, new Vector3(width, 1f, 40f), sand);
+            Barrier("Barrier A", new Vector3(-0.8f, 0.35f, 20f), hazard, dark);
 
-        // a gentle climb
-        const float rampLen = 30f;
-        Quaternion rot = Quaternion.Euler(-8f, 0f, 0f);
-        Vector3 start = new Vector3(0f, 0f, 45f);
-        Box("Ramp", start + rot * new Vector3(0f, -0.5f, rampLen * 0.5f), rot, new Vector3(width, 1f, rampLen), sand);
+            const float rampLen = 25f;
+            Quaternion rot = Quaternion.Euler(-6f, 0f, 0f);
+            Vector3 start = new Vector3(0f, 0f, 45f);
+            Box("Ramp", start + rot * new Vector3(0f, -0.5f, rampLen * 0.5f), rot, new Vector3(width, 1f, rampLen), sand);
 
-        // upper straight and summit platform
-        Vector3 top = start + rot * new Vector3(0f, 0f, rampLen);
-        Box("UpperTrack", top + new Vector3(0f, -0.5f, 10f), Quaternion.identity, new Vector3(width, 1f, 20f), sand);
-        Box("Summit", top + new Vector3(0f, -0.5f, 24f), Quaternion.identity, new Vector3(8f, 1f, 8f), sand);
+            Vector3 top = start + rot * new Vector3(0f, 0f, rampLen);
+            Box("UpperTrack", top + new Vector3(0f, -0.5f, 10f), Quaternion.identity, new Vector3(width, 1f, 20f), sand);
+            currentSummitPos = top + new Vector3(0f, 0f, 20f);
+            Box("Summit", currentSummitPos + new Vector3(0f, -0.5f, 0f), Quaternion.identity, new Vector3(8f, 1f, 8f), sand);
 
-        // flag at the top
-        Vector3 pole = top + new Vector3(0f, 0f, 24f);
-        GameObject poleGo = Box("FlagPole", pole + Vector3.up * 1.5f, Quaternion.identity, new Vector3(0.08f, 3f, 0.08f), hazard);
-        Collider pc = poleGo.GetComponent<Collider>();
-        if (pc != null) pc.enabled = false;
-        GameObject flag = Box("Flag", pole + new Vector3(0.5f, 2.6f, 0f), Quaternion.identity, new Vector3(1f, 0.6f, 0.04f), orange);
-        Collider fc = flag.GetComponent<Collider>();
-        if (fc != null) fc.enabled = false;
+            BuildFlag(currentSummitPos, hazard, orange);
+        }
+        else if (currentLevel == 2)
+        {
+            // Level 2: Narrower track with S-turns
+            Box("Track 1", new Vector3(0f, -0.5f, 15f), Quaternion.identity, new Vector3(width, 1f, 20f), sand);
+            Barrier("Barrier A", new Vector3(-0.6f, 0.35f, 12f), hazard, dark);
+
+            // Turn Right
+            Box("Corner 1", new Vector3(3f, -0.5f, 28f), Quaternion.identity, new Vector3(10f, 1f, width), sand);
+            Barrier("Barrier B", new Vector3(5f, 0.35f, 28f), hazard, dark);
+
+            // Turn Left & Forward
+            Box("Track 2", new Vector3(7f, -0.5f, 45f), Quaternion.identity, new Vector3(width, 1f, 30f), sand);
+
+            const float rampLen = 30f;
+            Quaternion rot = Quaternion.Euler(-10f, 0f, 0f);
+            Vector3 start = new Vector3(7f, 0f, 60f);
+            Box("Ramp", start + rot * new Vector3(0f, -0.5f, rampLen * 0.5f), rot, new Vector3(width, 1f, rampLen), sand);
+
+            Vector3 top = start + rot * new Vector3(0f, 0f, rampLen);
+            currentSummitPos = top + new Vector3(0f, 0f, 10f);
+            Box("Summit", currentSummitPos + new Vector3(0f, -0.5f, 0f), Quaternion.identity, new Vector3(8f, 1f, 8f), sand);
+
+            BuildFlag(currentSummitPos, hazard, orange);
+        }
+        else
+        {
+            // Level 3: Very narrow, steep climbs & multiple obstacles
+            Box("Track 1", new Vector3(0f, -0.5f, 15f), Quaternion.identity, new Vector3(width, 1f, 20f), sand);
+            Barrier("Barrier A", new Vector3(-0.4f, 0.35f, 10f), hazard, dark);
+            Barrier("Barrier B", new Vector3(0.4f, 0.35f, 18f), hazard, dark);
+
+            const float ramp1Len = 25f;
+            Quaternion rot1 = Quaternion.Euler(-12f, 0f, 0f);
+            Vector3 start1 = new Vector3(0f, 0f, 25f);
+            Box("Ramp 1", start1 + rot1 * new Vector3(0f, -0.5f, ramp1Len * 0.5f), rot1, new Vector3(width, 1f, ramp1Len), sand);
+
+            Vector3 top1 = start1 + rot1 * new Vector3(0f, 0f, ramp1Len);
+            Box("Mid Platform", top1 + new Vector3(2f, -0.5f, 5f), Quaternion.identity, new Vector3(8f, 1f, 8f), sand);
+
+            const float ramp2Len = 30f;
+            Quaternion rot2 = Quaternion.Euler(-14f, 0f, 0f);
+            Vector3 start2 = top1 + new Vector3(2f, 0f, 9f);
+            Box("Ramp 2", start2 + rot2 * new Vector3(0f, -0.5f, ramp2Len * 0.5f), rot2, new Vector3(width, 1f, ramp2Len), sand);
+
+            Vector3 top2 = start2 + rot2 * new Vector3(0f, 0f, ramp2Len);
+            currentSummitPos = top2 + new Vector3(0f, 0f, 8f);
+            Box("Summit", currentSummitPos + new Vector3(0f, -0.5f, 0f), Quaternion.identity, new Vector3(8f, 1f, 8f), sand);
+
+            BuildFlag(currentSummitPos, hazard, orange);
+        }
 
         if (FindFirstObjectByType<Light>() == null)
         {
@@ -178,18 +267,18 @@ public class TyrePushBootstrap : MonoBehaviour
         }
     }
 
-    static GameObject Box(string name, Vector3 pos, Quaternion rot, Vector3 scale, Material mat)
+    GameObject Box(string name, Vector3 pos, Quaternion rot, Vector3 scale, Material mat)
     {
         GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
         go.name = name;
         go.transform.SetPositionAndRotation(pos, rot);
         go.transform.localScale = scale;
         go.GetComponent<Renderer>().sharedMaterial = mat;
+        if (arenaContainer != null) go.transform.SetParent(arenaContainer.transform, true);
         return go;
     }
 
-    // Hazard-striped block: a dark body with yellow bands on top.
-    static void Barrier(string name, Vector3 pos, Material hazard, Material dark)
+    void Barrier(string name, Vector3 pos, Material hazard, Material dark)
     {
         GameObject body = Box(name, pos, Quaternion.identity, new Vector3(1.6f, 0.7f, 0.5f), dark);
         for (int i = 0; i < 4; i++)
@@ -200,6 +289,16 @@ public class TyrePushBootstrap : MonoBehaviour
             if (c != null) { c.enabled = false; Object.Destroy(c); }
             band.transform.SetParent(body.transform, true);
         }
+    }
+
+    void BuildFlag(Vector3 position, Material poleMat, Material flagMat)
+    {
+        GameObject poleGo = Box("FlagPole", position + Vector3.up * 1.5f, Quaternion.identity, new Vector3(0.08f, 3f, 0.08f), poleMat);
+        Collider pc = poleGo.GetComponent<Collider>();
+        if (pc != null) pc.enabled = false;
+        GameObject flag = Box("Flag", position + new Vector3(0.5f, 2.6f, 0f), Quaternion.identity, new Vector3(1f, 0.6f, 0.04f), flagMat);
+        Collider fc = flag.GetComponent<Collider>();
+        if (fc != null) fc.enabled = false;
     }
 
     // ------------------------------------------------------------------
